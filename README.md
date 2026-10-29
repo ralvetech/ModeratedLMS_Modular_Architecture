@@ -14,7 +14,7 @@ ctest --test-dir build --output-on-failure
 The `sudo` commands require a normal host terminal with administrative privileges. If your terminal reports `no new privileges`, resolve the environment/permission issue before installing packages.
 
 ## Demo accounts
-All seeded accounts use `ChangeMe123!`:
+All seeded accounts use `12345467890 OR ChangeMe123!`
 - `admin` — Administrator
 - `lecturer` — Lecturer
 - `hod` — Head of Department
