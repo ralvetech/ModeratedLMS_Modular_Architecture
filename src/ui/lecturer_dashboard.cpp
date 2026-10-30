@@ -1,6 +1,6 @@
 #include "lms/ui/main_window.hpp"
-#include "lms/domain.hpp"
 #include "lms/common.hpp"
+#include "lms/domain.hpp"
 #include <QWidget>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -35,7 +35,7 @@
 
 void MainWindow::buildLecturer() {
         QVBoxLayout *l;auto *w=page("Teaching workspace","Create assessment, extend deadlines, mark work and provide feedback.",&l);
-        auto *bar=new QHBoxLayout;auto *create=new QPushButton("Create assignment");auto *individual=new QPushButton("Individual extension");auto *whole=new QPushButton("Extend whole class");auto *mark=new QPushButton("Mark selected submission");bar->addWidget(create);bar->addWidget(individual);bar->addWidget(whole);bar->addWidget(mark);l->addLayout(bar);
+        auto *bar=new QHBoxLayout;auto *create=new QPushButton("Create assignment");auto *individual=new QPushButton("Individual extension");auto *whole=new QPushButton("Extend whole class");auto *viewSubmission=new QPushButton("View selected submission");auto *mark=new QPushButton("Mark selected submission");bar->addWidget(create);bar->addWidget(individual);bar->addWidget(whole);bar->addWidget(viewSubmission);bar->addWidget(mark);l->addLayout(bar);
         auto *t=table(l,{"ID","Course","Assignment","Student","Submitted","Status","Raw mark","Final mark","Feedback"});
         auto refresh=[=](){refreshSubmissions(t);};
         connect(create,&QPushButton::clicked,this,[=](){
@@ -48,73 +48,67 @@ void MainWindow::buildLecturer() {
             else {QSqlQuery x;x.prepare("INSERT INTO individual_extensions(assignment_id,student_id,due_at,reason) VALUES(?,?,?,?) ON CONFLICT(assignment_id,student_id) DO UPDATE SET due_at=excluded.due_at,reason=excluded.reason");x.addBindValue(a.currentData());x.addBindValue(s.currentData());x.addBindValue(due.dateTime().toString(Qt::ISODate));x.addBindValue(reason.text());if(!x.exec())QMessageBox::warning(this,"Error",x.lastError().text());}
         };
         connect(individual,&QPushButton::clicked,this,[=](){extension(false);});connect(whole,&QPushButton::clicked,this,[=](){extension(true);});
+        connect(viewSubmission,&QPushButton::clicked,this,[=](){
+            const int row=t->currentRow();
+            if(row<0){
+                QMessageBox::information(this,"Select submission","Select a student submission from the table first.");
+                return;
+            }
+
+            const int sid=t->item(row,0)->text().toInt();
+            QSqlQuery q;
+            q.prepare(
+                "SELECT s.content,u.full_name,c.code,a.title,s.submitted_at,s.status "
+                "FROM submissions s "
+                "JOIN assignments a ON a.id=s.assignment_id "
+                "JOIN courses c ON c.id=a.course_id "
+                "JOIN users u ON u.id=s.student_id "
+                "WHERE s.id=? AND c.lecturer_id=?"
+            );
+            q.addBindValue(sid);
+            q.addBindValue(uid);
+
+            if(!q.exec() || !q.next()){
+                QMessageBox::warning(this,"Cannot view submission",
+                                     "The submission could not be found, or it is not assigned to you. "
+                                     + q.lastError().text());
+                return;
+            }
+
+            QDialog d(this);
+            d.setWindowTitle("Student submission – " + q.value(1).toString());
+            d.resize(760,560);
+            auto *layout=new QVBoxLayout(&d);
+
+            auto *details=new QLabel(
+                "<b>Student:</b> " + q.value(1).toString().toHtmlEscaped()
+                + "<br><b>Course:</b> " + q.value(2).toString().toHtmlEscaped()
+                + "<br><b>Assignment:</b> " + q.value(3).toString().toHtmlEscaped()
+                + "<br><b>Submitted:</b> " + q.value(4).toString().toHtmlEscaped()
+                + "<br><b>Status:</b> " + q.value(5).toString().toHtmlEscaped()
+            );
+            details->setTextFormat(Qt::RichText);
+            details->setWordWrap(true);
+            layout->addWidget(details);
+
+            auto *content=new QTextEdit;
+            content->setReadOnly(true);
+            content->setPlainText(q.value(0).toString());
+            content->setLineWrapMode(QTextEdit::WidgetWidth);
+            content->setMinimumHeight(360);
+            layout->addWidget(content,1);
+
+            auto *buttons=new QDialogButtonBox(QDialogButtonBox::Close);
+            layout->addWidget(buttons);
+            connect(buttons,&QDialogButtonBox::rejected,&d,&QDialog::reject);
+            d.exec();
+        });
+
         connect(mark,&QPushButton::clicked,this,[=](){
             int row=t->currentRow();if(row<0){QMessageBox::information(this,"Select submission","Select a submission first.");return;}int sid=t->item(row,0)->text().toInt();
             QSqlQuery check;check.prepare("SELECT s.status,a.max_mark,s.raw_mark FROM submissions s JOIN assignments a ON a.id=s.assignment_id JOIN courses c ON c.id=a.course_id WHERE s.id=? AND c.lecturer_id=?");check.addBindValue(sid);check.addBindValue(uid);if(!check.exec()||!check.next()){QMessageBox::warning(this,"Not allowed","This submission is not assigned to you.");return;}if(check.value(0).toString()=="Released"){QMessageBox::warning(this,"Locked","Released marks cannot be edited.");return;}
             bool ok=false;double raw=QInputDialog::getDouble(this,"Mark submission","Raw mark (before late penalty):",check.value(2).isNull()?0:check.value(2).toDouble(),0,check.value(1).toDouble(),2,&ok);if(!ok)return;QString feedback=QInputDialog::getMultiLineText(this,"Written feedback","Feedback:","",&ok);if(!ok)return;QString reason=QInputDialog::getText(this,"Audit reason","Reason for mark change:",QLineEdit::Normal,"Initial marking",&ok);if(!ok||reason.trimmed().isEmpty())return;
-            QSqlQuery sub;
-sub.prepare(
-    "SELECT s.submitted_at, "
-    "COALESCE(i.due_at, a.class_extension, a.due_at), "
-    "a.max_mark "
-    "FROM submissions s "
-    "JOIN assignments a ON a.id = s.assignment_id "
-    "LEFT JOIN individual_extensions i "
-    "ON i.assignment_id = a.id "
-    "AND i.student_id = s.student_id "
-    "WHERE s.id = ?"
-);
-
-sub.addBindValue(sid);
-
-if (!sub.exec() || !sub.next()) {
-    QMessageBox::warning(
-        this,
-        "Deadline error",
-        "Could not retrieve the submission deadline: "
-            + sub.lastError().text()
-    );
-    return;
-}
-
-QString submittedText = sub.value(0).toString().trimmed();
-QString dueText = sub.value(1).toString().trimmed();
-
-QDateTime submitted =
-    QDateTime::fromString(submittedText, Qt::ISODate);
-
-QDateTime due =
-    QDateTime::fromString(dueText, Qt::ISODate);
-
-if (!submitted.isValid() || !due.isValid()) {
-    QMessageBox::warning(
-        this,
-        "Invalid dates",
-        QString("Could not calculate the late penalty.\n"
-                "Submitted: %1\nDeadline: %2")
-            .arg(submittedText, dueText)
-    );
-    return;
-}
-
-int days = 0;
-
-if (submitted.isValid() && due.isValid()) {
-    qint64 secondsLate = due.secsTo(submitted);
-
-    if (secondsLate > 0) {
-        days = 1 + static_cast<int>(
-            (secondsLate - 1) / 86400
-        );
-    }
-}
-
-double maxMark = sub.value(2).toDouble();
-
-lms::StandardLatePenalty penaltyPolicy;
-
-double finalMark =
-    penaltyPolicy.finalMark(raw, maxMark, days);
+            QSqlQuery sub;sub.prepare("SELECT submitted_at,COALESCE(i.due_at,a.class_extension,a.due_at),a.max_mark FROM submissions s JOIN assignments a ON a.id=s.assignment_id LEFT JOIN individual_extensions i ON i.assignment_id=a.id AND i.student_id=s.student_id WHERE s.id=?");sub.addBindValue(sid);sub.exec();sub.next();QDateTime submitted=QDateTime::fromString(sub.value(0).toString(),Qt::ISODate), due=QDateTime::fromString(sub.value(1).toString(),Qt::ISODate);int days=0;if(submitted>due)days=std::max(1,int(due.daysTo(submitted)));double maxMark=sub.value(2).toDouble(); lms::StandardLatePenalty penaltyPolicy; double finalMark=penaltyPolicy.finalMark(raw,maxMark,days);
             QSqlQuery old;old.prepare("SELECT raw_mark FROM submissions WHERE id=?");old.addBindValue(sid);old.exec();old.next();QVariant oldMark=old.value(0);
             auto db = QSqlDatabase::database();
             if (!db.transaction()) { QMessageBox::warning(this,"Database error","Could not start mark transaction: "+db.lastError().text()); return; }
